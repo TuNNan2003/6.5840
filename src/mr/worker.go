@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -21,94 +22,109 @@ func (m KeyValueArray) Len() int           { return len(m) }
 func (m KeyValueArray) Swap(i, j int)      { m[i], m[j] = m[j], m[i] }
 func (m KeyValueArray) Less(i, j int) bool { return m[i].Key < m[j].Key }
 
-type worker struct {
-	ID   int
-	task Task
-}
-
 func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	worker := worker{workerID, Task{}}
+	worker := MRworker{workerID, Task{}}
 	worker.task.mapf = mapf
 	worker.task.reducef = reducef
-	ok := call("Coordinator.WorkerRegister", &worker, nil)
-	if ok {
+	var tempInt int
+	err := call("Coordinator.Register", &worker, &tempInt)
+	if err {
+		fmt.Println("register one worker")
 		for {
-			call("Coordinator.GetTask", &worker, nil)
-			switch worker.task.tasktype {
-			//This is not a task
-			case 0:
+			err := call("Coordinator.GetTask", &worker, &tempInt)
+			fmt.Println(worker)
+			if err {
+				switch worker.task.tasktype {
+				//This is not a task
+				case 0:
+					fmt.Println("Get task 0")
+					time.Sleep(3 * time.Second)
+				//This is a map task
+				case 1:
+					fmt.Println("Get task 1")
+					var kvResult []KeyValue
+					for _, filename := range worker.task.filename {
+						file, err := os.Open(filename)
+						if err != nil {
+							log.Fatalf("can't open %v", worker.task.filename)
+						}
+						conslice, err := ioutil.ReadAll(file)
+						if err != nil {
+							log.Fatalf("can't read %v", worker.task.filename)
+						}
+						file.Close()
+						resultSlice := worker.task.mapf(filename, string(conslice))
+						kvResult = append(kvResult, resultSlice...)
+					}
+					var nReduce int
+					temp := MRworker{0, Task{}}
+					ok := call("Coordinator.GetnReduce", &temp, &nReduce)
+					if !ok {
+						return
+					}
+					worker.emit(&kvResult, nReduce)
+					call("Coordinator.TaskFinish", &worker, &tempInt)
+				//This is a reduce task
+				case 2:
+					fmt.Println("Get task 2")
+					var content []KeyValue
+					var key, value string
+					for _, filename := range worker.task.filename {
+						file, err := os.Open(filename)
+						for err == nil {
+							_, err := fmt.Fscanf(file, "%v %v\n", &key, &value)
+							if err != nil {
+								break
+							}
+							content = append(content, KeyValue{key, value})
+						}
+						file.Close()
+					}
+					var reduceResult []KeyValue
+					sort.Sort(KeyValueArray(content))
+					i := 0
+					for i < len(content) {
+						j := i + 1
+						for j < len(content) && content[j].Key == content[i].Key {
+							j++
+						}
+						values := []string{}
+						for k := i; k < j; k++ {
+							values = append(values, content[k].Value)
+						}
+						output := worker.task.reducef(content[i].Value, values)
+						reduceResult = append(reduceResult, KeyValue{content[i].Key, output})
+					}
 
-			//This is a map task
-			case 1:
-				var kvResult []KeyValue
-				for _, filename := range worker.task.filename {
-					file, err := os.Open(filename)
-					if err != nil {
-						log.Fatalf("can't open %v", worker.task.filename)
-					}
-					conslice, err := ioutil.ReadAll(file)
-					if err != nil {
-						log.Fatalf("can't read %v", worker.task.filename)
-					}
-					file.Close()
-					resultSlice := worker.task.mapf(filename, string(conslice))
-					kvResult = append(kvResult, resultSlice...)
-				}
-				var nReduce int
-				ok := call("Coordinate.GetnReduce", nil, &nReduce)
-				if !ok {
+					worker.emit(&reduceResult, -1)
+					call("Coordinator.TaskFinish", &worker, &tempInt)
+				//This indicates a end
+				case 3:
 					return
 				}
-				worker.emit(&kvResult, nReduce)
-			//This is a reduce task
-			case 2:
-				var content []KeyValue
-				var key, value string
-				for _, filename := range worker.task.filename {
-					file, err := os.Open(filename)
-					for err == nil {
-						_, err := fmt.Fscanf(file, "%v %v\n", &key, &value)
-						if err != nil {
-							break
-						}
-						content = append(content, KeyValue{key, value})
-					}
-					file.Close()
-				}
-				var reduceResult []KeyValue
-				sort.Sort(KeyValueArray(content))
-				i := 0
-				for i < len(content) {
-					j := i + 1
-					for j < len(content) && content[j].Key == content[i].Key {
-						j++
-					}
-					values := []string{}
-					for k := i; k < j; k++ {
-						values = append(values, content[k].Value)
-					}
-					output := worker.task.reducef(content[i].Value, values)
-					reduceResult = append(reduceResult, KeyValue{content[i].Key, output})
-				}
-				worker.emit(&reduceResult, -1)
-			//This indicates a end
-			case 3:
-				return
+			} else {
+				fmt.Println("Error when getting task")
 			}
 		}
 	}
 }
 
-func (w *worker) emit(Result *[]KeyValue, nReduce int) {
+func (w *MRworker) emit(Result *[]KeyValue, nReduce int) {
 	switch w.task.tasktype {
 	//produce output file for map
 	case 1:
 		sort.Sort(KeyValueArray(*Result))
 		mOutFile := make([]*os.File, nReduce)
+		OutFilePath := make([]string, nReduce)
 		for i := 0; i < nReduce; i++ {
-			file, _ := os.Create(fmt.Sprintf("m%d-out-%d", w.ID, i))
-			mOutFile[i] = file
+			filename := fmt.Sprintf("m%d-out-%d", w.ID, i)
+			file, err := os.Create(filename)
+			if err != nil {
+				mOutFile[i] = file
+				OutFilePath[i] = filename
+			}
 		}
+		w.task.filename = OutFilePath
 		for _, kv := range *Result {
 			fmt.Fprintf(mOutFile[ihash(kv.Key)%nReduce], "%v %v\n", kv.Key, kv.Value)
 		}
@@ -137,13 +153,24 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 	var workernum int
-	ok := call("Coordinator.GetnReduce", nil, &workernum)
+	temp := MRworker{0, Task{}}
+	temp.task.mapf = mapf
+	temp.task.reducef = reducef
+	temp.task.filename = make([]string, 0)
+	ok := call("Coordinator.GetnReduce", temp, &workernum)
 	if ok {
-		for i := 1; i < workernum; i++ {
+		for i := 0; i < workernum; i++ {
 			go workerTrigger(i, mapf, reducef)
 		}
 	} else {
 		log.Fatal("get nReduce RPC failed")
+	}
+	var finish bool
+	for {
+		call("Coordinator.WorkerQuit", &temp, &finish)
+		if finish {
+			return
+		}
 	}
 }
 

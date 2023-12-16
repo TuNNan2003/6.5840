@@ -16,11 +16,22 @@ import (
 // and reply for an RPC.
 //
 
+type TaskDesc struct {
+	filename []string
+	tasktype int
+	time     int
+}
+
 type Task struct {
 	filename []string
 	mapf     func(string, string) []KeyValue
 	reducef  func(string, []string) string
 	tasktype int
+}
+
+type MRworker struct {
+	ID   int
+	task Task
 }
 
 type ExampleArgs struct {
