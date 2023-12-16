@@ -26,8 +26,10 @@ type worker struct {
 	task Task
 }
 
-func workerTrigger(workerID int) {
+func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	worker := worker{workerID, Task{}}
+	worker.task.mapf = mapf
+	worker.task.reducef = reducef
 	ok := call("Coordinator.WorkerRegister", &worker, nil)
 	if ok {
 		for {
@@ -38,16 +40,20 @@ func workerTrigger(workerID int) {
 
 			//This is a map task
 			case 1:
-				file, err := os.Open(worker.task.filename)
-				if err != nil {
-					log.Fatalf("can't open %v", worker.task.filename)
+				var kvResult []KeyValue
+				for _, filename := range worker.task.filename {
+					file, err := os.Open(filename)
+					if err != nil {
+						log.Fatalf("can't open %v", worker.task.filename)
+					}
+					conslice, err := ioutil.ReadAll(file)
+					if err != nil {
+						log.Fatalf("can't read %v", worker.task.filename)
+					}
+					file.Close()
+					resultSlice := worker.task.mapf(filename, string(conslice))
+					kvResult = append(kvResult, resultSlice...)
 				}
-				content, err := ioutil.ReadAll(file)
-				if err != nil {
-					log.Fatalf("can't read %v", worker.task.filename)
-				}
-				file.Close()
-				kvResult := worker.task.mapf(worker.task.filename, string(content))
 				var nReduce int
 				ok := call("Coordinate.GetnReduce", nil, &nReduce)
 				if !ok {
@@ -56,8 +62,38 @@ func workerTrigger(workerID int) {
 				worker.emit(&kvResult, nReduce)
 			//This is a reduce task
 			case 2:
+				var content []KeyValue
+				var key, value string
+				for _, filename := range worker.task.filename {
+					file, err := os.Open(filename)
+					for err == nil {
+						_, err := fmt.Fscanf(file, "%v %v\n", &key, &value)
+						if err != nil {
+							break
+						}
+						content = append(content, KeyValue{key, value})
+					}
+					file.Close()
+				}
+				var reduceResult []KeyValue
+				sort.Sort(KeyValueArray(content))
+				i := 0
+				for i < len(content) {
+					j := i + 1
+					for j < len(content) && content[j].Key == content[i].Key {
+						j++
+					}
+					values := []string{}
+					for k := i; k < j; k++ {
+						values = append(values, content[k].Value)
+					}
+					output := worker.task.reducef(content[i].Value, values)
+					reduceResult = append(reduceResult, KeyValue{content[i].Key, output})
+				}
+				worker.emit(&reduceResult, -1)
 			//This indicates a end
 			case 3:
+				return
 			}
 		}
 	}
@@ -70,14 +106,17 @@ func (w *worker) emit(Result *[]KeyValue, nReduce int) {
 		sort.Sort(KeyValueArray(*Result))
 		mOutFile := make([]*os.File, nReduce)
 		for i := 0; i < nReduce; i++ {
-			file, _ := os.Create(fmt.Sprintf("m-out-%d", i))
+			file, _ := os.Create(fmt.Sprintf("m%d-out-%d", w.ID, i))
 			mOutFile[i] = file
 		}
 		for _, kv := range *Result {
 			fmt.Fprintf(mOutFile[ihash(kv.Key)%nReduce], "%v %v\n", kv.Key, kv.Value)
 		}
 	case 2:
-
+		rOutFile, _ := os.Create(fmt.Sprintf("mr-out-%d", w.ID))
+		for _, kv := range *Result {
+			fmt.Fprintf(rOutFile, "%v %v\n", kv.Key, kv.Value)
+		}
 	}
 }
 
@@ -101,7 +140,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	ok := call("Coordinator.GetnReduce", nil, &workernum)
 	if ok {
 		for i := 1; i < workernum; i++ {
-			go workerTrigger(i)
+			go workerTrigger(i, mapf, reducef)
 		}
 	} else {
 		log.Fatal("get nReduce RPC failed")

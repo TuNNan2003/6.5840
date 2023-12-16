@@ -17,7 +17,7 @@ import (
 //
 
 type Task struct {
-	filename string
+	filename []string
 	mapf     func(string, string) []KeyValue
 	reducef  func(string, []string) string
 	tasktype int
