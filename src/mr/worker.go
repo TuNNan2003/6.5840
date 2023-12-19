@@ -24,17 +24,21 @@ func (m KeyValueArray) Less(i, j int) bool { return m[i].Key < m[j].Key }
 
 func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	worker := MRworker{workerID, Task{}}
-	worker.task.mapf = mapf
-	worker.task.reducef = reducef
+	worker.Task.mapf = mapf
+	worker.Task.reducef = reducef
 	var tempInt int
 	err := call("Coordinator.Register", &worker, &tempInt)
 	if err {
 		fmt.Println("register one worker")
 		for {
-			err := call("Coordinator.GetTask", &worker, &tempInt)
-			fmt.Println(worker)
+			nwork := MRworker{Task: Task{}}
+			err := call("Coordinator.GetTask", &worker, &nwork)
+			fmt.Println(worker, nwork)
+			worker = nwork
+			worker.Task.mapf = mapf
+			worker.Task.reducef = reducef
 			if err {
-				switch worker.task.tasktype {
+				switch worker.Task.TaskType {
 				//This is not a task
 				case 0:
 					fmt.Println("Get task 0")
@@ -43,17 +47,17 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 				case 1:
 					fmt.Println("Get task 1")
 					var kvResult []KeyValue
-					for _, filename := range worker.task.filename {
+					for _, filename := range worker.Task.Filename {
 						file, err := os.Open(filename)
 						if err != nil {
-							log.Fatalf("can't open %v", worker.task.filename)
+							log.Fatalf("can't open %v", worker.Task.Filename)
 						}
 						conslice, err := ioutil.ReadAll(file)
 						if err != nil {
-							log.Fatalf("can't read %v", worker.task.filename)
+							log.Fatalf("can't read %v", worker.Task.Filename)
 						}
 						file.Close()
-						resultSlice := worker.task.mapf(filename, string(conslice))
+						resultSlice := worker.Task.mapf(filename, string(conslice))
 						kvResult = append(kvResult, resultSlice...)
 					}
 					var nReduce int
@@ -69,7 +73,7 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 					fmt.Println("Get task 2")
 					var content []KeyValue
 					var key, value string
-					for _, filename := range worker.task.filename {
+					for _, filename := range worker.Task.Filename {
 						file, err := os.Open(filename)
 						for err == nil {
 							_, err := fmt.Fscanf(file, "%v %v\n", &key, &value)
@@ -92,7 +96,7 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 						for k := i; k < j; k++ {
 							values = append(values, content[k].Value)
 						}
-						output := worker.task.reducef(content[i].Value, values)
+						output := worker.Task.reducef(content[i].Value, values)
 						reduceResult = append(reduceResult, KeyValue{content[i].Key, output})
 					}
 
@@ -100,6 +104,7 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 					call("Coordinator.TaskFinish", &worker, &tempInt)
 				//This indicates a end
 				case 3:
+					fmt.Println("Get task 3")
 					return
 				}
 			} else {
@@ -110,24 +115,30 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 }
 
 func (w *MRworker) emit(Result *[]KeyValue, nReduce int) {
-	switch w.task.tasktype {
+	switch w.Task.TaskType {
 	//produce output file for map
 	case 1:
 		sort.Sort(KeyValueArray(*Result))
-		mOutFile := make([]*os.File, nReduce)
-		OutFilePath := make([]string, nReduce)
+		var mOutFile []*os.File
+		var OutFilePath []string
 		for i := 0; i < nReduce; i++ {
 			filename := fmt.Sprintf("m%d-out-%d", w.ID, i)
 			file, err := os.Create(filename)
-			if err != nil {
-				mOutFile[i] = file
-				OutFilePath[i] = filename
+			if err == nil {
+				mOutFile = append(mOutFile, file)
+				OutFilePath = append(OutFilePath, filename)
+			} else {
+				fmt.Println(err)
 			}
 		}
-		w.task.filename = OutFilePath
+		w.Task.Filename = OutFilePath
 		for _, kv := range *Result {
 			fmt.Fprintf(mOutFile[ihash(kv.Key)%nReduce], "%v %v\n", kv.Key, kv.Value)
 		}
+		for _, file := range mOutFile {
+			file.Close()
+		}
+		return
 	case 2:
 		rOutFile, _ := os.Create(fmt.Sprintf("mr-out-%d", w.ID))
 		for _, kv := range *Result {
@@ -154,9 +165,9 @@ func Worker(mapf func(string, string) []KeyValue,
 	// CallExample()
 	var workernum int
 	temp := MRworker{0, Task{}}
-	temp.task.mapf = mapf
-	temp.task.reducef = reducef
-	temp.task.filename = make([]string, 0)
+	temp.Task.mapf = mapf
+	temp.Task.reducef = reducef
+	temp.Task.Filename = make([]string, 0)
 	ok := call("Coordinator.GetnReduce", temp, &workernum)
 	if ok {
 		for i := 0; i < workernum; i++ {
@@ -218,6 +229,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	fmt.Println("RPC error:", rpcname, err)
 	return false
 }

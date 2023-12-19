@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -50,52 +51,62 @@ func (c *Coordinator) Register(w *MRworker, reply *int) error {
 	return nil
 }
 
-func (c *Coordinator) GetTask(worker *MRworker, reply *int) error {
+func (c *Coordinator) GetTask(worker *MRworker, reply *MRworker) error {
 	c.JobMux.Lock()
 	mapfinish := c.MapFinish
 	c.JobMux.Unlock()
+	fmt.Println("Map condition", mapfinish)
 	if !mapfinish {
 		c.TaskMux.Lock()
 		for _, file := range c.files {
 			if !c.FileOccupy[file] {
 				c.FileOccupy[file] = true
 				fname := []string{file}
-				c.tasks[worker] = TaskDesc{filename: fname, tasktype: 1, time: 0}
-				worker.task.filename = fname
-				worker.task.tasktype = c.tasks[worker].tasktype
-				log.Fatalf("generate task %v -> %v\n", file, worker)
+				c.tasks[worker] = TaskDesc{Filename: fname, TaskType: 1, Time: 0}
+				reply.ID = worker.ID
+				reply.Task.Filename = fname
+				reply.Task.TaskType = c.tasks[worker].TaskType
+				//log.Fatalf("generate task %v -> %v\n", file, reply)
+				fmt.Println("assign task 1", worker, reply)
+				c.TaskMux.Unlock()
 				return nil
 			}
 		}
-		worker.task.tasktype = 0
+		reply.ID = worker.ID
+		reply.Task.TaskType = 0
+		worker.Task.TaskType = 0
+		fmt.Println("assign task 0", worker, reply)
 		c.TaskMux.Unlock()
+		return nil
 	} else {
 		c.TaskMux.Lock()
+		fmt.Println("task 2 or 3", len(c.tasks), c.nReduce)
 		if len(c.tasks) < c.nReduce {
 			mFileGroup := c.intermadiateFiles[len(c.tasks)]
-			c.tasks[worker] = TaskDesc{filename: mFileGroup, tasktype: 2, time: 0}
-			worker.task.filename = mFileGroup
-			worker.task.tasktype = 2
-			log.Fatalf("generate task %v -> %v\n", mFileGroup, worker)
+			c.tasks[worker] = TaskDesc{Filename: mFileGroup, TaskType: 2, Time: 0}
+			reply.Task.TaskType = 2
+			reply.Task.Filename = mFileGroup
+			//log.Fatalf("generate task %v -> %v\n", mFileGroup, worker)
 		} else {
-			worker.task.tasktype = 3
-			log.Fatalf("ask one worker to quit %v", worker)
+			reply.Task.TaskType = 3
+			//log.Fatalf("ask one worker to quit %v", worker)
 		}
 		c.TaskMux.Unlock()
 		return nil
 	}
-	return nil
 }
 
 func (c *Coordinator) TaskFinish(worker *MRworker, reply *int) error {
-	switch worker.task.tasktype {
+	switch worker.Task.TaskType {
 	case 1:
+		fmt.Println("task finish", worker)
 		c.JobMux.Lock()
 		c.MapFinishNum++
+		fmt.Println("finished & all ", c.MapFinishNum, len(c.files))
 		if c.MapFinishNum == len(c.files) {
 			c.MapFinish = true
 		}
-		for i, filename := range worker.task.filename {
+		for i, filename := range worker.Task.Filename {
 			c.intermadiateFiles[i] = append(c.intermadiateFiles[i], filename)
 		}
 		c.JobMux.Unlock()
@@ -160,6 +171,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for _, file := range files {
 		c.FileOccupy[file] = false
 	}
+	c.intermadiateFiles = make([][]string, nReduce)
 	c.workers = make([]*MRworker, 0)
 	c.tasks = make(map[*MRworker]TaskDesc)
 	// Your code here.

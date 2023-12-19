@@ -17,21 +17,21 @@ import (
 //
 
 type TaskDesc struct {
-	filename []string
-	tasktype int
-	time     int
+	Filename []string
+	TaskType int
+	Time     int
 }
 
 type Task struct {
-	filename []string
+	Filename []string
 	mapf     func(string, string) []KeyValue
 	reducef  func(string, []string) string
-	tasktype int
+	TaskType int
 }
 
 type MRworker struct {
 	ID   int
-	task Task
+	Task Task
 }
 
 type ExampleArgs struct {
