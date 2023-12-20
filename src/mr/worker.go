@@ -5,7 +5,6 @@ import (
 	"hash/fnv"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"net/rpc"
 	"os"
 	"sort"
@@ -165,10 +164,10 @@ func Worker(mapf func(string, string) []KeyValue,
 	temp.Task.reducef = reducef
 	temp.Task.Filename = make([]string, 0)
 	ok := call("Coordinator.GetnReduce", temp, &workernum)
+	pid := os.Getpid()
 	if ok {
 		for i := 0; i < workernum; i++ {
-			id := rand.Intn(100)
-			go workerTrigger(id, mapf, reducef)
+			go workerTrigger(pid*100+i, mapf, reducef)
 		}
 	} else {
 		log.Fatal("get nReduce RPC failed")
