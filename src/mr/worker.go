@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/rpc"
 	"os"
 	"sort"
@@ -29,11 +30,9 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 	var tempInt int
 	err := call("Coordinator.Register", &worker, &tempInt)
 	if err {
-		fmt.Println("register one worker")
 		for {
 			nwork := MRworker{Task: Task{}}
 			err := call("Coordinator.GetTask", &worker, &nwork)
-			fmt.Println(worker, nwork)
 			worker = nwork
 			worker.Task.mapf = mapf
 			worker.Task.reducef = reducef
@@ -41,11 +40,9 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 				switch worker.Task.TaskType {
 				//This is not a task
 				case 0:
-					fmt.Println("Get task 0")
-					time.Sleep(3 * time.Second)
+					time.Sleep(3 * time.Microsecond)
 				//This is a map task
 				case 1:
-					fmt.Println("Get task 1")
 					var kvResult []KeyValue
 					for _, filename := range worker.Task.Filename {
 						file, err := os.Open(filename)
@@ -70,7 +67,6 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 					call("Coordinator.TaskFinish", &worker, &tempInt)
 				//This is a reduce task
 				case 2:
-					fmt.Println("Get task 2")
 					var content []KeyValue
 					var key, value string
 					for _, filename := range worker.Task.Filename {
@@ -98,13 +94,13 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 						}
 						output := worker.Task.reducef(content[i].Value, values)
 						reduceResult = append(reduceResult, KeyValue{content[i].Key, output})
+						i = j
 					}
 
 					worker.emit(&reduceResult, -1)
 					call("Coordinator.TaskFinish", &worker, &tempInt)
 				//This indicates a end
 				case 3:
-					fmt.Println("Get task 3")
 					return
 				}
 			} else {
@@ -171,7 +167,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	ok := call("Coordinator.GetnReduce", temp, &workernum)
 	if ok {
 		for i := 0; i < workernum; i++ {
-			go workerTrigger(i, mapf, reducef)
+			id := rand.Intn(100)
+			go workerTrigger(id, mapf, reducef)
 		}
 	} else {
 		log.Fatal("get nReduce RPC failed")

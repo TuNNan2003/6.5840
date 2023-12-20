@@ -1,20 +1,25 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
+
+type interFiles struct {
+	filePaths []string
+	occupy    bool
+}
 
 type Coordinator struct {
 	// Your definitions here.
-	files             []string
-	intermadiateFiles [][]string
-	nReduce           int
+	files      []string
+	InterFiles []interFiles
+	nReduce    int
 
 	JobMux          sync.Mutex
 	MapFinish       bool //whether map jobs has all finished
@@ -26,8 +31,8 @@ type Coordinator struct {
 	WorkerMux sync.Mutex  //mutex for the worker queue
 	workers   []*MRworker //the worker queue
 
-	TaskMux sync.Mutex             //mutex for the task queue
-	tasks   map[*MRworker]TaskDesc //the task queue
+	TaskMux sync.Mutex       //mutex for the task queue
+	tasks   map[int]TaskDesc //the task queue
 
 	FileOccupy map[string]bool
 }
@@ -55,19 +60,17 @@ func (c *Coordinator) GetTask(worker *MRworker, reply *MRworker) error {
 	c.JobMux.Lock()
 	mapfinish := c.MapFinish
 	c.JobMux.Unlock()
-	fmt.Println("Map condition", mapfinish)
 	if !mapfinish {
 		c.TaskMux.Lock()
-		for _, file := range c.files {
+		for num, file := range c.files {
 			if !c.FileOccupy[file] {
 				c.FileOccupy[file] = true
 				fname := []string{file}
-				c.tasks[worker] = TaskDesc{Filename: fname, TaskType: 1, Time: 0}
+				c.tasks[worker.ID] = TaskDesc{Filename: fname, TaskType: 1, Time: 0, seqnum: num}
 				reply.ID = worker.ID
 				reply.Task.Filename = fname
-				reply.Task.TaskType = c.tasks[worker].TaskType
+				reply.Task.TaskType = c.tasks[worker.ID].TaskType
 				//log.Fatalf("generate task %v -> %v\n", file, reply)
-				fmt.Println("assign task 1", worker, reply)
 				c.TaskMux.Unlock()
 				return nil
 			}
@@ -75,19 +78,25 @@ func (c *Coordinator) GetTask(worker *MRworker, reply *MRworker) error {
 		reply.ID = worker.ID
 		reply.Task.TaskType = 0
 		worker.Task.TaskType = 0
-		fmt.Println("assign task 0", worker, reply)
 		c.TaskMux.Unlock()
 		return nil
 	} else {
 		c.TaskMux.Lock()
-		fmt.Println("task 2 or 3", len(c.tasks), c.nReduce)
 		if len(c.tasks) < c.nReduce {
-			mFileGroup := c.intermadiateFiles[len(c.tasks)]
-			c.tasks[worker] = TaskDesc{Filename: mFileGroup, TaskType: 2, Time: 0}
-			reply.Task.TaskType = 2
-			reply.Task.Filename = mFileGroup
-			//log.Fatalf("generate task %v -> %v\n", mFileGroup, worker)
+			for num, interfile := range c.InterFiles {
+				if !interfile.occupy {
+					c.InterFiles[num].occupy = true
+					mFileGroup := interfile.filePaths
+					c.tasks[worker.ID] = TaskDesc{Filename: mFileGroup, TaskType: 2, Time: 0, seqnum: num}
+					reply.ID = worker.ID
+					reply.Task.TaskType = 2
+					reply.Task.Filename = mFileGroup
+					c.TaskMux.Unlock()
+					return nil
+				}
+			}
 		} else {
+			reply.ID = worker.ID
 			reply.Task.TaskType = 3
 			//log.Fatalf("ask one worker to quit %v", worker)
 		}
@@ -99,19 +108,17 @@ func (c *Coordinator) GetTask(worker *MRworker, reply *MRworker) error {
 func (c *Coordinator) TaskFinish(worker *MRworker, reply *int) error {
 	switch worker.Task.TaskType {
 	case 1:
-		fmt.Println("task finish", worker)
 		c.JobMux.Lock()
 		c.MapFinishNum++
-		fmt.Println("finished & all ", c.MapFinishNum, len(c.files))
 		if c.MapFinishNum == len(c.files) {
 			c.MapFinish = true
 		}
 		for i, filename := range worker.Task.Filename {
-			c.intermadiateFiles[i] = append(c.intermadiateFiles[i], filename)
+			c.InterFiles[i].filePaths = append(c.InterFiles[i].filePaths, filename)
 		}
 		c.JobMux.Unlock()
 		c.TaskMux.Lock()
-		delete(c.tasks, worker)
+		delete(c.tasks, worker.ID)
 		c.TaskMux.Unlock()
 
 	case 2:
@@ -155,7 +162,22 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	// Your code here.
+	time.Sleep(time.Second * 5)
+	c.TaskMux.Lock()
+	for id, desc := range c.tasks {
+		desc.Time += 5
+		if desc.Time >= 10 {
+			switch desc.TaskType {
+			case 1:
+				c.FileOccupy[desc.Filename[0]] = false
+			case 2:
+				c.InterFiles[desc.seqnum].occupy = false
+			}
+			delete(c.tasks, id)
+		}
+	}
 
+	c.TaskMux.Unlock()
 	return c.AllFinish
 }
 
@@ -171,9 +193,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for _, file := range files {
 		c.FileOccupy[file] = false
 	}
-	c.intermadiateFiles = make([][]string, nReduce)
+	c.InterFiles = make([]interFiles, nReduce)
+	for _, interfile := range c.InterFiles {
+		interfile.filePaths = make([]string, 0)
+		interfile.occupy = false
+	}
 	c.workers = make([]*MRworker, 0)
-	c.tasks = make(map[*MRworker]TaskDesc)
+	c.tasks = make(map[int]TaskDesc)
 	// Your code here.
 
 	c.server()

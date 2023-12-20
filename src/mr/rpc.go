@@ -20,6 +20,7 @@ type TaskDesc struct {
 	Filename []string
 	TaskType int
 	Time     int
+	seqnum   int
 }
 
 type Task struct {
