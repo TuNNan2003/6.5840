@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,8 @@ type KeyValueArray []KeyValue
 func (m KeyValueArray) Len() int           { return len(m) }
 func (m KeyValueArray) Swap(i, j int)      { m[i], m[j] = m[j], m[i] }
 func (m KeyValueArray) Less(i, j int) bool { return m[i].Key < m[j].Key }
+
+var funclock sync.Mutex
 
 func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	worker := MRworker{workerID, Task{}}
@@ -53,8 +56,22 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 							log.Fatalf("can't read %v", worker.Task.Filename)
 						}
 						file.Close()
+						funclock.Lock()
+						var alive int
+						call("Coordinator.IfDeleted", &worker, &alive)
+						if alive != 1 {
+							funclock.Unlock()
+							continue
+						}
 						resultSlice := worker.Task.mapf(filename, string(conslice))
+						call("Coordinator.IfDeleted", &worker, &alive)
+						if alive != 1 {
+							funclock.Unlock()
+							continue
+						}
+						funclock.Unlock()
 						kvResult = append(kvResult, resultSlice...)
+
 					}
 					var nReduce int
 					temp := MRworker{0, Task{}}
@@ -91,7 +108,20 @@ func workerTrigger(workerID int, mapf func(string, string) []KeyValue, reducef f
 						for k := i; k < j; k++ {
 							values = append(values, content[k].Value)
 						}
+						funclock.Lock()
+						var alive int
+						call("Coordinator.IfDeleted", &worker, &alive)
+						if alive != 1 {
+							funclock.Unlock()
+							continue
+						}
 						output := worker.Task.reducef(content[i].Value, values)
+						call("Coordinator.IfDeleted", &worker, &alive)
+						if alive != 1 {
+							funclock.Unlock()
+							continue
+						}
+						funclock.Unlock()
 						reduceResult = append(reduceResult, KeyValue{content[i].Key, output})
 						i = j
 					}

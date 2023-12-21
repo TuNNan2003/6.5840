@@ -62,17 +62,19 @@ func (c *Coordinator) GetTask(worker *MRworker, reply *MRworker) error {
 	c.JobMux.Unlock()
 	if !mapfinish {
 		c.TaskMux.Lock()
-		for num, file := range c.files {
-			if !c.FileOccupy[file] {
-				c.FileOccupy[file] = true
-				fname := []string{file}
-				c.tasks[worker.ID] = &TaskDesc{Filename: fname, TaskType: 1, Time: 0, seqnum: num}
-				reply.ID = worker.ID
-				reply.Task.Filename = fname
-				reply.Task.TaskType = c.tasks[worker.ID].TaskType
-				log.Print("assign task 1", reply)
-				c.TaskMux.Unlock()
-				return nil
+		if len(c.tasks) < 8 {
+			for num, file := range c.files {
+				if !c.FileOccupy[file] {
+					c.FileOccupy[file] = true
+					fname := []string{file}
+					c.tasks[worker.ID] = &TaskDesc{Filename: fname, TaskType: 1, Time: 0, seqnum: num}
+					reply.ID = worker.ID
+					reply.Task.Filename = fname
+					reply.Task.TaskType = c.tasks[worker.ID].TaskType
+					log.Print("assign task 1", reply)
+					c.TaskMux.Unlock()
+					return nil
+				}
 			}
 		}
 		reply.ID = worker.ID
@@ -104,7 +106,7 @@ func (c *Coordinator) GetTask(worker *MRworker, reply *MRworker) error {
 		}
 		reply.ID = worker.ID
 		reply.Task.TaskType = 0
-		log.Print("assign task 0 to not quit", reply)
+		//log.Print("assign task 0 to not quit", reply)
 		//log.Fatalf("ask one worker to quit %v", worker)
 		c.TaskMux.Unlock()
 		return nil
@@ -118,6 +120,20 @@ func (c *Coordinator) GetTask(worker *MRworker, reply *MRworker) error {
 	}
 }
 
+func (c *Coordinator) IfDeleted(worker *MRworker, reply *int) error {
+	c.TaskMux.Lock()
+	_, find := c.tasks[worker.ID]
+	if !find {
+		*reply = -1
+		c.TaskMux.Unlock()
+		return nil
+	}
+	*reply = 1
+	c.tasks[worker.ID].Time = 0
+	c.TaskMux.Unlock()
+	return nil
+}
+
 func (c *Coordinator) TaskFinish(worker *MRworker, reply *int) error {
 	switch worker.Task.TaskType {
 	case 1:
@@ -126,7 +142,10 @@ func (c *Coordinator) TaskFinish(worker *MRworker, reply *int) error {
 		_, find := c.tasks[worker.ID]
 		c.TaskMux.Unlock()
 		if find {
+			*reply = 1
 			c.MapFinishNum++
+		} else {
+			*reply = -1
 		}
 		if c.MapFinishNum == len(c.files) {
 			c.MapFinish = true
@@ -199,11 +218,13 @@ func (c *Coordinator) Done() bool {
 			case 1:
 				log.Print("task 1 find one crash ", id, desc)
 				c.FileOccupy[desc.Filename[0]] = false
+				delete(c.tasks, id)
 			case 2:
 				log.Print("task 2 find one crash ", id, desc)
 				c.InterFiles[desc.seqnum].occupy = false
+				delete(c.tasks, id)
 			}
-			delete(c.tasks, id)
+
 		}
 	}
 
